@@ -213,6 +213,61 @@ MODEL_FEATURES = [
     "log_amihud_illiquidity",
 ]
 
+FOCUS_MAX_PICKS_DEFAULT = 2
+
+BUDGET_PRICE_MIN = 0.75
+BUDGET_PRICE_MAX = 25.0
+SUPERNOVA_MARKET_CAP_MAX = 2_500_000_000
+CONTINUATION_MARKET_CAP_MAX = 6_000_000_000
+SUPERNOVA_FLOAT_MAX = 80_000_000
+CONTINUATION_FLOAT_MAX = 220_000_000
+SUPERNOVA_SCORE_THRESHOLD = 57.0
+CONTINUATION_SCORE_THRESHOLD = 55.0
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def to_float(value: Any) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def yes_no_flag(value: Any) -> bool:
+    return str(value).strip().upper() == "YES"
+
+
+def scale_0_1(value: Any, low: float, high: float) -> float:
+    numeric = to_float(value)
+    if numeric is None or high <= low:
+        return 0.0
+    return clamp((numeric - low) / (high - low), 0.0, 1.0)
+
+
+def breakout_pressure_score(distance_pct: Any, max_below_pct: float = 12.0) -> float:
+    numeric = to_float(distance_pct)
+    if numeric is None:
+        return 0.0
+    if numeric >= 0:
+        return 1.0
+    return clamp(1.0 - abs(numeric) / max_below_pct, 0.0, 1.0)
+
+
+def hold_quality_score(value: Any) -> float:
+    text = str(value or "").strip().upper()
+    if text == "GOOD":
+        return 1.0
+    if text == "FAIR":
+        return 0.65
+    if text == "POOR":
+        return 0.15
+    return 0.35
+
 
 def yes_no_to_int(value: Any) -> float:
     if pd.isna(value):
@@ -435,6 +490,10 @@ def build_scan_snapshot_from_history(ticker: str, frame: pd.DataFrame) -> dict[s
         return None
 
     last_close = float(df["Close"].iloc[-1])
+    last_open = float(df["Open"].iloc[-1])
+    last_high = float(df["High"].iloc[-1])
+    last_low = float(df["Low"].iloc[-1])
+    last_volume = float(df["Volume"].iloc[-1])
     if last_close <= 0:
         return None
 
@@ -442,6 +501,8 @@ def build_scan_snapshot_from_history(ticker: str, frame: pd.DataFrame) -> dict[s
     major_high_idx = int(df["High"].idxmax())
     major_high = float(df["High"].iloc[major_high_idx])
     major_high_date = pd.Timestamp(df["Date"].iloc[major_high_idx]).tz_convert(NY_TZ)
+    high_20d = float(df["High"].tail(20).max())
+    high_50d = float(df["High"].tail(50).max())
 
     prior_close = df["Close"].shift(1)
     expansion_pct_series = (df["High"] / prior_close - 1.0) * 100.0
@@ -472,6 +533,16 @@ def build_scan_snapshot_from_history(ticker: str, frame: pd.DataFrame) -> dict[s
         "ticker": ticker,
         "event_date": as_of_date.strftime("%Y-%m-%d"),
         "prev_close": last_close,
+        "latest_open": last_open,
+        "latest_high": last_high,
+        "latest_low": last_low,
+        "latest_day_volume": last_volume,
+        "latest_dollar_volume": last_close * last_volume,
+        "latest_rvol": (last_volume / avg_volume_20d) if avg_volume_20d else None,
+        "latest_close_strength": ((last_close - last_low) / (last_high - last_low))
+        if last_high > last_low
+        else None,
+        "latest_expansion_pct": ((last_high / float(df["Close"].iloc[-2])) - 1.0) * 100.0 if len(df) >= 2 else None,
         "avg_volume_20d": avg_volume_20d,
         "market_cap": info.get("marketCap"),
         "free_float": info.get("floatShares"),
@@ -496,8 +567,10 @@ def build_scan_snapshot_from_history(ticker: str, frame: pd.DataFrame) -> dict[s
         "years_since_major_peak": round((as_of_date - major_high_date).days / 365.25, 2),
         "distance_from_52w_low_pct": safe_ratio_pct(last_close, rolling_52w_low),
         "drawdown_from_major_high_pct": (1.0 - last_close / major_high) * 100.0 if major_high else None,
-        "distance_to_20d_high_pct": safe_ratio_pct(last_close, float(df["High"].tail(20).max())),
-        "distance_to_50d_high_pct": safe_ratio_pct(last_close, float(df["High"].tail(50).max())),
+        "distance_to_20d_high_pct": safe_ratio_pct(last_close, high_20d),
+        "distance_to_50d_high_pct": safe_ratio_pct(last_close, high_50d),
+        "prior_20d_high": high_20d,
+        "prior_50d_high": high_50d,
         "sma20": float(df["Close"].tail(20).mean()),
         "sma50": float(df["Close"].tail(50).mean()),
         "sma150": float(df["Close"].tail(150).mean()) if len(df) >= 150 else np.nan,
@@ -571,6 +644,8 @@ def fetch_current_premarket_context(ticker: str, prev_close: float | None) -> di
     return {
         "premarket_open": pre_open,
         "premarket_high": pre_high,
+        "premarket_low": pre_low,
+        "premarket_last": float(pre.iloc[-1]["Close"]),
         "premarket_volume": int(pre_volume),
         "premarket_dollar_volume": round(pre_dollar, 2),
         "premarket_vwap": round(pre_vwap, 6) if pre_vwap else None,
@@ -578,6 +653,419 @@ def fetch_current_premarket_context(ticker: str, prev_close: float | None) -> di
         "premarket_hold_quality": hold_quality,
         "premarket_range_pct": safe_ratio_pct(pre_high, pre_low),
     }
+
+
+def market_cap_penalty(row: pd.Series, ceiling: float) -> float:
+    market_cap = to_float(row.get("market_cap"))
+    if market_cap is None:
+        return 0.0
+    return scale_0_1(market_cap, ceiling, ceiling * 3.0)
+
+
+def float_penalty(row: pd.Series, ceiling: float) -> float:
+    free_float = to_float(row.get("free_float"))
+    if free_float is None:
+        return 0.0
+    return scale_0_1(free_float, ceiling, ceiling * 3.0)
+
+
+def short_squeeze_pressure(row: pd.Series) -> float:
+    short_score = scale_0_1(row.get("short_float_pct"), 0.05, 0.30)
+    cover_score = scale_0_1(row.get("days_to_cover"), 1.5, 8.0)
+    float_score = 1.0 - scale_0_1(row.get("free_float"), 20_000_000, 180_000_000)
+    return clamp(short_score * 0.5 + cover_score * 0.25 + float_score * 0.25, 0.0, 1.0)
+
+
+def premarket_confirmation(row: pd.Series) -> float:
+    gap_score = scale_0_1(row.get("premarket_gap_pct"), 2.0, 25.0)
+    dollar_score = scale_0_1(row.get("premarket_dollar_volume"), 250_000, 10_000_000)
+    hold_score = hold_quality_score(row.get("premarket_hold_quality"))
+    return clamp(gap_score * 0.35 + dollar_score * 0.35 + hold_score * 0.30, 0.0, 1.0)
+
+
+def structural_runner_score(row: pd.Series) -> float:
+    former_runner = 1.0 if yes_no_flag(row.get("former_runner_history")) else 0.0
+    explosive_history = scale_0_1(row.get("highest_intraday_expansion_last_252d_pct"), 40.0, 250.0)
+    volume_shock = scale_0_1(row.get("max_volume_shock_last_252d"), 3.0, 20.0)
+    return clamp(former_runner * 0.45 + explosive_history * 0.30 + volume_shock * 0.25, 0.0, 1.0)
+
+
+def continuation_tape_score(row: pd.Series) -> float:
+    trend_score = 0.0
+    if yes_no_flag(row.get("price_above_sma50_yes_no")):
+        trend_score += 0.4
+    if yes_no_flag(row.get("price_above_sma200_yes_no")):
+        trend_score += 0.2
+    if yes_no_flag(row.get("vcp_like_contraction_yes_no")):
+        trend_score += 0.15
+    if yes_no_flag(row.get("ttm_squeeze_on")):
+        trend_score += 0.10
+    if yes_no_flag(row.get("ttm_squeeze_fired")):
+        trend_score += 0.15
+    close_strength = scale_0_1(row.get("latest_close_strength"), 0.45, 0.9)
+    latest_rvol = scale_0_1(row.get("latest_rvol"), 1.1, 4.0)
+    breakout_score = breakout_pressure_score(row.get("distance_to_20d_high_pct"), max_below_pct=8.0)
+    return clamp(trend_score * 0.40 + close_strength * 0.25 + latest_rvol * 0.20 + breakout_score * 0.15, 0.0, 1.0)
+
+
+def budget_liquidity_score(row: pd.Series) -> float:
+    price = to_float(row.get("prev_close"))
+    avg_volume = to_float(row.get("avg_volume_20d"))
+    if price is None or avg_volume is None:
+        return 0.0
+    if price < BUDGET_PRICE_MIN or price > BUDGET_PRICE_MAX:
+        return 0.0
+    price_score = 1.0 - abs(clamp((price - 7.5) / 17.5, -1.0, 1.0))
+    volume_score = scale_0_1(avg_volume, 800_000, 20_000_000)
+    return clamp(price_score * 0.35 + volume_score * 0.65, 0.0, 1.0)
+
+
+def compute_supernova_probability(row: pd.Series) -> float:
+    clean_spike = clamp(to_float(row.get("clean_spike_probability")) or 0.0, 0.0, 1.0)
+    toxic = clamp(to_float(row.get("toxic_probability")) or 0.0, 0.0, 1.0)
+    runner = structural_runner_score(row)
+    squeeze = short_squeeze_pressure(row)
+    breakout = breakout_pressure_score(row.get("distance_to_20d_high_pct"), max_below_pct=12.0)
+    premarket = premarket_confirmation(row)
+    volatility = scale_0_1((to_float(row.get("atr_14")) or 0.0) / max(to_float(row.get("prev_close")) or 1.0, 0.01), 0.04, 0.20)
+    liquidity = budget_liquidity_score(row)
+    rs_penalty = 1.0 if yes_no_flag(row.get("reverse_split_in_last_24m")) else 0.0
+    legacy_rs_penalty = 0.4 if not yes_no_flag(row.get("has_never_reverse_split")) else 0.0
+    size_penalty = market_cap_penalty(row, SUPERNOVA_MARKET_CAP_MAX)
+    float_cap_penalty = float_penalty(row, SUPERNOVA_FLOAT_MAX)
+
+    probability = (
+        clean_spike * 0.30
+        + runner * 0.18
+        + squeeze * 0.14
+        + breakout * 0.10
+        + premarket * 0.12
+        + volatility * 0.08
+        + liquidity * 0.08
+        - toxic * 0.30
+        - rs_penalty * 0.22
+        - legacy_rs_penalty * 0.08
+        - size_penalty * 0.10
+        - float_cap_penalty * 0.06
+    )
+    return clamp(probability, 0.0, 1.0)
+
+
+def compute_continuation_probability(row: pd.Series) -> float:
+    clean_spike = clamp(to_float(row.get("clean_spike_probability")) or 0.0, 0.0, 1.0)
+    toxic = clamp(to_float(row.get("toxic_probability")) or 0.0, 0.0, 1.0)
+    tape = continuation_tape_score(row)
+    squeeze = short_squeeze_pressure(row)
+    runner = structural_runner_score(row)
+    premarket = premarket_confirmation(row)
+    liquidity = budget_liquidity_score(row)
+    rs_penalty = 1.0 if yes_no_flag(row.get("reverse_split_in_last_24m")) else 0.0
+    size_penalty = market_cap_penalty(row, CONTINUATION_MARKET_CAP_MAX)
+    float_cap_penalty = float_penalty(row, CONTINUATION_FLOAT_MAX)
+
+    probability = (
+        clean_spike * 0.28
+        + tape * 0.25
+        + squeeze * 0.10
+        + runner * 0.10
+        + premarket * 0.10
+        + liquidity * 0.07
+        - toxic * 0.28
+        - rs_penalty * 0.16
+        - size_penalty * 0.08
+        - float_cap_penalty * 0.05
+    )
+    return clamp(probability, 0.0, 1.0)
+
+
+def passes_supernova_filters(row: pd.Series) -> bool:
+    price = to_float(row.get("prev_close"))
+    avg_volume = to_float(row.get("avg_volume_20d"))
+    market_cap = to_float(row.get("market_cap"))
+    free_float = to_float(row.get("free_float"))
+    latest_rvol = to_float(row.get("latest_rvol"))
+    gap = to_float(row.get("premarket_gap_pct"))
+    toxic = to_float(row.get("toxic_probability")) or 0.0
+
+    if price is None or price < BUDGET_PRICE_MIN or price > 20.0:
+        return False
+    if avg_volume is None or avg_volume < 750_000:
+        return False
+    if market_cap is not None and market_cap > SUPERNOVA_MARKET_CAP_MAX:
+        return False
+    if free_float is not None and free_float > SUPERNOVA_FLOAT_MAX:
+        return False
+    if yes_no_flag(row.get("reverse_split_in_last_24m")):
+        return False
+    if not yes_no_flag(row.get("has_never_reverse_split")):
+        return False
+    if toxic > 0.30:
+        return False
+    if breakout_pressure_score(row.get("distance_to_20d_high_pct"), 12.0) < 0.35:
+        return False
+    if structural_runner_score(row) < 0.35:
+        return False
+    if latest_rvol is not None and latest_rvol < 1.2:
+        return False
+    if gap is not None and gap < -5.0:
+        return False
+    return True
+
+
+def passes_continuation_filters(row: pd.Series) -> bool:
+    price = to_float(row.get("prev_close"))
+    avg_volume = to_float(row.get("avg_volume_20d"))
+    market_cap = to_float(row.get("market_cap"))
+    free_float = to_float(row.get("free_float"))
+    latest_rvol = to_float(row.get("latest_rvol"))
+    close_strength = to_float(row.get("latest_close_strength"))
+    gap = to_float(row.get("premarket_gap_pct"))
+    toxic = to_float(row.get("toxic_probability")) or 0.0
+
+    if price is None or price < 1.0 or price > BUDGET_PRICE_MAX:
+        return False
+    if avg_volume is None or avg_volume < 1_000_000:
+        return False
+    if market_cap is not None and market_cap > CONTINUATION_MARKET_CAP_MAX:
+        return False
+    if free_float is not None and free_float > CONTINUATION_FLOAT_MAX:
+        return False
+    if yes_no_flag(row.get("reverse_split_in_last_24m")):
+        return False
+    if toxic > 0.25:
+        return False
+    if not yes_no_flag(row.get("price_above_sma50_yes_no")):
+        return False
+    if close_strength is not None and close_strength < 0.55:
+        return False
+    if latest_rvol is not None and latest_rvol < 1.15:
+        return False
+    if breakout_pressure_score(row.get("distance_to_20d_high_pct"), 8.0) < 0.45:
+        return False
+    if str(row.get("premarket_hold_quality") or "").upper() == "POOR":
+        return False
+    if gap is not None and gap < -4.0:
+        return False
+    return True
+
+
+def derive_breakout_reference(row: pd.Series, profile: str) -> float | None:
+    candidates: list[float] = []
+    prev_close = to_float(row.get("prev_close"))
+    premarket_high = to_float(row.get("premarket_high"))
+    prior_20d_high = to_float(row.get("prior_20d_high"))
+    prior_50d_high = to_float(row.get("prior_50d_high"))
+
+    if premarket_high is not None:
+        candidates.append(premarket_high)
+    if prior_20d_high is not None:
+        candidates.append(prior_20d_high)
+    if profile == "NEXT_DAY_CONTINUATION" and prior_50d_high is not None:
+        candidates.append(prior_50d_high)
+    if prev_close is not None:
+        candidates.append(prev_close * (1.02 if profile == "SUPERNOVA_IGNITION" else 1.01))
+    if not candidates:
+        return None
+    return max(candidates)
+
+
+def build_selection_reason(row: pd.Series, profile: str) -> str:
+    parts: list[str] = []
+    if yes_no_flag(row.get("has_never_reverse_split")):
+        parts.append("clean capital structure")
+    if structural_runner_score(row) >= 0.6:
+        parts.append("former runner memory")
+    if short_squeeze_pressure(row) >= 0.55:
+        parts.append("short squeeze pressure")
+    if premarket_confirmation(row) >= 0.65:
+        parts.append("strong premarket confirmation")
+    if continuation_tape_score(row) >= 0.6 and profile == "NEXT_DAY_CONTINUATION":
+        parts.append("tight continuation tape")
+    if breakout_pressure_score(row.get("distance_to_20d_high_pct")) >= 0.75:
+        parts.append("near breakout trigger")
+    if not parts:
+        parts.append("model edge exceeds focus threshold")
+    return ", ".join(parts[:3])
+
+
+def build_trade_plan(row: pd.Series, profile: str) -> dict[str, Any]:
+    entry_reference = derive_breakout_reference(row, profile)
+    prev_close = to_float(row.get("prev_close"))
+    premarket_vwap = to_float(row.get("premarket_vwap"))
+    atr_14 = to_float(row.get("atr_14")) or 0.0
+    premarket_low = to_float(row.get("premarket_low"))
+
+    if entry_reference is None or prev_close is None:
+        return {
+            "entry_price": None,
+            "stop_price": None,
+            "target_price": None,
+            "expected_move_pct": None,
+            "risk_reward_ratio": None,
+            "no_trade_below": None,
+        }
+
+    entry_buffer = 1.002 if profile == "SUPERNOVA_IGNITION" else 1.001
+    entry_price = entry_reference * entry_buffer
+
+    atr_pct = (atr_14 / max(prev_close, 0.01)) * 100.0 if atr_14 else 0.0
+    stop_pct = clamp(
+        max(atr_pct * (0.70 if profile == "SUPERNOVA_IGNITION" else 0.55), 5.5 if profile == "SUPERNOVA_IGNITION" else 4.5),
+        5.5 if profile == "SUPERNOVA_IGNITION" else 4.5,
+        11.0 if profile == "SUPERNOVA_IGNITION" else 8.5,
+    )
+
+    no_trade_floor = max(
+        premarket_vwap if premarket_vwap is not None else 0.0,
+        premarket_low if premarket_low is not None else 0.0,
+        prev_close * (0.97 if profile == "SUPERNOVA_IGNITION" else 0.985),
+    )
+    stop_price = max(entry_price * (1.0 - stop_pct / 100.0), no_trade_floor * 0.995)
+    if stop_price >= entry_price:
+        stop_price = entry_price * 0.94
+
+    profile_probability = (
+        to_float(row.get("supernova_probability")) if profile == "SUPERNOVA_IGNITION" else to_float(row.get("continuation_probability"))
+    ) or 0.0
+    expected_move_pct = clamp(
+        (13.0 if profile == "SUPERNOVA_IGNITION" else 12.0) + profile_probability * (22.0 if profile == "SUPERNOVA_IGNITION" else 18.0),
+        15.0,
+        30.0,
+    )
+    target_price = entry_price * (1.0 + expected_move_pct / 100.0)
+    risk_reward_ratio = (target_price - entry_price) / max(entry_price - stop_price, 0.0001)
+
+    return {
+        "entry_price": round(entry_price, 4),
+        "stop_price": round(stop_price, 4),
+        "target_price": round(target_price, 4),
+        "expected_move_pct": round(expected_move_pct, 2),
+        "risk_reward_ratio": round(risk_reward_ratio, 2),
+        "no_trade_below": round(no_trade_floor, 4) if no_trade_floor > 0 else None,
+    }
+
+
+def enrich_focus_rows(scored: pd.DataFrame) -> pd.DataFrame:
+    enriched = scored.copy()
+    for col in [
+        "latest_rvol",
+        "latest_close_strength",
+        "latest_day_volume",
+        "latest_dollar_volume",
+        "prior_20d_high",
+        "prior_50d_high",
+        "premarket_high",
+        "premarket_low",
+        "premarket_vwap",
+        "premarket_gap_pct",
+        "premarket_dollar_volume",
+        "premarket_hold_quality",
+    ]:
+        if col not in enriched.columns:
+            enriched[col] = np.nan
+    enriched["supernova_probability"] = enriched.apply(compute_supernova_probability, axis=1)
+    enriched["continuation_probability"] = enriched.apply(compute_continuation_probability, axis=1)
+    enriched["supernova_focus_score"] = (enriched["supernova_probability"] * 100.0).round(2)
+    enriched["continuation_focus_score"] = (enriched["continuation_probability"] * 100.0).round(2)
+
+    profiles = []
+    scores = []
+    for _, row in enriched.iterrows():
+        supernova_score = to_float(row.get("supernova_focus_score")) or 0.0
+        continuation_score = to_float(row.get("continuation_focus_score")) or 0.0
+        if supernova_score >= continuation_score:
+            profiles.append("SUPERNOVA_IGNITION")
+            scores.append(supernova_score)
+        else:
+            profiles.append("NEXT_DAY_CONTINUATION")
+            scores.append(continuation_score)
+    enriched["trade_profile"] = profiles
+    enriched["scan_priority_score"] = scores
+    enriched["setup_grade"] = enriched["scan_priority_score"].map(priority_to_grade)
+    return enriched
+
+
+def select_focus_picks(scored: pd.DataFrame, max_picks: int = FOCUS_MAX_PICKS_DEFAULT) -> pd.DataFrame:
+    if scored.empty:
+        return scored.copy()
+
+    enriched = enrich_focus_rows(scored)
+    supernova_pool = enriched[enriched.apply(passes_supernova_filters, axis=1)].copy()
+    supernova_pool = supernova_pool[supernova_pool["supernova_focus_score"] >= SUPERNOVA_SCORE_THRESHOLD]
+    supernova_pool = supernova_pool.sort_values(["supernova_focus_score", "clean_spike_probability"], ascending=False)
+
+    continuation_pool = enriched[enriched.apply(passes_continuation_filters, axis=1)].copy()
+    continuation_pool = continuation_pool[continuation_pool["continuation_focus_score"] >= CONTINUATION_SCORE_THRESHOLD]
+    continuation_pool = continuation_pool.sort_values(
+        ["continuation_focus_score", "clean_spike_probability"],
+        ascending=False,
+    )
+
+    selected_indices: list[int] = []
+    used_tickers: set[str] = set()
+
+    for pool in (supernova_pool, continuation_pool):
+        for idx, row in pool.iterrows():
+            ticker = str(row["ticker"])
+            if ticker in used_tickers:
+                continue
+            selected_indices.append(idx)
+            used_tickers.add(ticker)
+            break
+
+    combined_pool = pd.concat(
+        [
+            supernova_pool.assign(_focus_metric=supernova_pool["supernova_focus_score"]),
+            continuation_pool.assign(_focus_metric=continuation_pool["continuation_focus_score"]),
+        ],
+        axis=0,
+    )
+    combined_pool = combined_pool.sort_values("_focus_metric", ascending=False)
+    for idx, row in combined_pool.iterrows():
+        if len(selected_indices) >= max_picks:
+            break
+        ticker = str(row["ticker"])
+        if ticker in used_tickers:
+            continue
+        selected_indices.append(idx)
+        used_tickers.add(ticker)
+
+    if not selected_indices:
+        fallback = enriched.sort_values(
+            ["scan_priority_score", "clean_spike_probability", "latest_rvol"],
+            ascending=False,
+        ).head(max_picks).copy()
+        fallback["selection_reason"] = fallback.apply(
+            lambda row: build_selection_reason(row, str(row["trade_profile"])),
+            axis=1,
+        )
+        fallback_trade_plans = fallback.apply(
+            lambda row: build_trade_plan(row, str(row["trade_profile"])),
+            axis=1,
+        )
+        fallback_trade_df = pd.DataFrame(list(fallback_trade_plans), index=fallback.index)
+        fallback = pd.concat([fallback, fallback_trade_df], axis=1)
+        fallback = fallback.reset_index(drop=True)
+        fallback["selection_rank"] = np.arange(1, len(fallback) + 1)
+        fallback.attrs["universe_size"] = int(len(enriched))
+        fallback.attrs["eligible_focus_count"] = 0
+        fallback.attrs["used_fallback"] = True
+        return fallback
+
+    selected = enriched.loc[selected_indices].copy()
+    selected["selection_reason"] = selected.apply(
+        lambda row: build_selection_reason(row, str(row["trade_profile"])),
+        axis=1,
+    )
+    trade_plans = selected.apply(lambda row: build_trade_plan(row, str(row["trade_profile"])), axis=1)
+    trade_plan_df = pd.DataFrame(list(trade_plans), index=selected.index)
+    selected = pd.concat([selected, trade_plan_df], axis=1)
+    selected = selected.sort_values("scan_priority_score", ascending=False).head(max_picks).reset_index(drop=True)
+    selected["selection_rank"] = np.arange(1, len(selected) + 1)
+    selected.attrs["universe_size"] = int(len(enriched))
+    selected.attrs["eligible_focus_count"] = int(len(pd.concat([supernova_pool, continuation_pool], axis=0)))
+    selected.attrs["used_fallback"] = False
+    return selected
 
 
 def score_snapshot_rows(rows: pd.DataFrame, artifact: dict[str, Any]) -> pd.DataFrame:
@@ -589,7 +1077,7 @@ def score_snapshot_rows(rows: pd.DataFrame, artifact: dict[str, Any]) -> pd.Data
     scored["spike_probability"] = spike_proba
     scored["toxic_probability"] = toxic_proba
     scored["clean_spike_probability"] = scored["spike_probability"] * (1.0 - scored["toxic_probability"])
-    scored["scan_priority_score"] = scored.apply(apply_scan_priority_score, axis=1)
+    scored["scan_priority_score"] = scored["clean_spike_probability"] * 100.0
     scored["setup_grade"] = scored["scan_priority_score"].map(priority_to_grade)
     return scored.sort_values("scan_priority_score", ascending=False).reset_index(drop=True)
 
@@ -601,6 +1089,7 @@ def run_scan(
     append_default_universe: bool = False,
     skip_premarket: bool = False,
     top_context_rows: int = 30,
+    max_picks: int = FOCUS_MAX_PICKS_DEFAULT,
 ) -> pd.DataFrame:
     if artifact is None:
         artifact = load_artifact(artifact_path)
@@ -644,39 +1133,9 @@ def run_scan(
         scored = pd.concat([rescored_top, base_rest], ignore_index=True)
         scored = scored.sort_values("scan_priority_score", ascending=False).reset_index(drop=True)
 
-    return scored
-
-
-def apply_scan_priority_score(row: pd.Series) -> float:
-    base = float(row["clean_spike_probability"])
-    adjustment = 1.0
-
-    gap = pd.to_numeric(row.get("premarket_gap_pct"), errors="coerce")
-    pre_dollar = pd.to_numeric(row.get("premarket_dollar_volume"), errors="coerce")
-    hold_quality = str(row.get("premarket_hold_quality") or "").upper()
-    reverse_split_recent = str(row.get("reverse_split_in_last_24m") or "").upper() == "YES"
-
-    if pd.notna(gap) and gap > 0:
-        adjustment += min(0.25, float(gap) / 200.0)
-    if pd.notna(pre_dollar):
-        if pre_dollar >= 5_000_000:
-            adjustment += 0.15
-        elif pre_dollar >= 1_000_000:
-            adjustment += 0.10
-        elif pre_dollar >= 250_000:
-            adjustment += 0.05
-    if hold_quality == "GOOD":
-        adjustment += 0.10
-    elif hold_quality == "FAIR":
-        adjustment += 0.04
-    elif hold_quality == "POOR":
-        adjustment -= 0.05
-
-    if reverse_split_recent:
-        adjustment -= 0.35
-
-    score = min(max(base * adjustment * 100.0, 0.0), 100.0)
-    return round(score, 2)
+    focus_picks = select_focus_picks(scored, max_picks=max_picks)
+    focus_picks.attrs["universe_size"] = int(len(scored))
+    return focus_picks
 
 
 def priority_to_grade(score: float) -> str:
