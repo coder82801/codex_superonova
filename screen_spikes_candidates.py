@@ -15,7 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Score US stock candidates for pre-spike potential.")
     parser.add_argument("--model", type=Path, default=MODEL_PATH, help="Trained model artifact path.")
     parser.add_argument("--output", type=Path, default=DEFAULT_SCREEN_PATH, help="CSV output path.")
-    parser.add_argument("--top", type=int, default=25, help="How many top rows to print.")
+    parser.add_argument("--top", type=int, default=2, help="How many focus picks to print.")
     parser.add_argument(
         "--tickers",
         type=str,
@@ -66,7 +66,8 @@ def main() -> None:
         tickers=extra_tickers or None,
         append_default_universe=args.append_default_universe,
         skip_premarket=args.skip_premarket,
-        top_context_rows=max(args.top * 2, 30),
+        top_context_rows=max(args.top * 15, 60),
+        max_picks=args.top,
     )
     if scored.empty:
         raise SystemExit("No scan snapshots could be built.")
@@ -75,15 +76,23 @@ def main() -> None:
     scored.to_csv(args.output, index=False)
     print(f"[done] wrote scan results: {args.output}")
     display_cols = [
+        "selection_rank",
         "ticker",
+        "trade_profile",
         "scan_priority_score",
         "setup_grade",
+        "supernova_probability",
+        "continuation_probability",
         "clean_spike_probability",
-        "spike_probability",
         "toxic_probability",
+        "entry_price",
+        "stop_price",
+        "target_price",
+        "expected_move_pct",
+        "risk_reward_ratio",
+        "no_trade_below",
+        "selection_reason",
         "prev_close",
-        "avg_volume_20d",
-        "reverse_split_in_last_24m",
         "premarket_gap_pct",
         "premarket_dollar_volume",
         "premarket_hold_quality",
