@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Spike Scanner</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <div class="page-shell">
+      <section class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">US Spike Scanner</span>
+          <h1>Patlama öncesi adayları temiz ve toksik ayrımıyla tara.</h1>
+          <p>
+            Bu arayüz, eğitilmiş spike modeliyle hisseleri skorlar; ayrı bir toxic modeliyle
+            reverse split ve kirli yapı riskini aşağı iter.
+          </p>
+        </div>
+        <div class="hero-note">
+          <div class="note-card">
+            <span class="note-label">Tarama Mantığı</span>
+            <p>`scan_priority_score` = temiz spike olasılığı + varsa premarket bağlamı.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <form method="post" action="/scan" class="scan-form">
+          <label class="field">
+            <span>Watchlist</span>
+            <textarea name="tickers" rows="5" placeholder="Örn: MYSE, WSHP, CMPS, QBTS">{{ form_data.tickers }}</textarea>
+          </label>
+
+          <div class="controls-row">
+            <label class="field compact">
+              <span>Gösterilecek Sonuç</span>
+              <input type="number" min="5" max="100" step="1" name="table_limit" value="{{ form_data.table_limit }}">
+            </label>
+
+            <label class="toggle">
+              <input type="checkbox" name="append_default_universe" {% if form_data.append_default_universe %}checked{% endif %}>
+              <span>Varsayılan momentum evrenini de ekle</span>
+            </label>
+
+            <label class="toggle">
+              <input type="checkbox" name="skip_premarket" {% if form_data.skip_premarket %}checked{% endif %}>
+              <span>Premarket bağlamını atla</span>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button type="submit">Taramayı Başlat</button>
+          </div>
+        </form>
+      </section>
+
+      {% if error %}
+      <section class="alert error">{{ error }}</section>
+      {% endif %}
+
+      {% if summary %}
+      <section class="summary-grid">
+        <article class="summary-card">
+          <span>Toplam Aday</span>
+          <strong>{{ summary.total_candidates }}</strong>
+        </article>
+        <article class="summary-card">
+          <span>En Yüksek Skor</span>
+          <strong>{{ "%.2f"|format(summary.top_score) }}</strong>
+        </article>
+        <article class="summary-card">
+          <span>A / A+ Sayısı</span>
+          <strong>{{ summary.a_grade_count }}</strong>
+        </article>
+        <article class="summary-card">
+          <span>Kaynak</span>
+          <strong>{% if summary.used_watchlist %}Watchlist{% else %}Default Universe{% endif %}</strong>
+        </article>
+      </section>
+      {% endif %}
+
+      {% if results %}
+      <section class="panel results-panel">
+        <div class="panel-head">
+          <h2>Tarama Sonuçları</h2>
+          <p>Skor yüksek oldukça temiz spike setup olasılığı artar.</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                {% for key in results[0].keys() %}
+                <th>{{ key }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in results %}
+              <tr>
+                {% for key, value in row.items() %}
+                <td>{{ value if value is not none else "" }}</td>
+                {% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% endif %}
+    </div>
+  </body>
+</html>
