@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import pandas as pd
+
 from spike_model_core import (
     DEFAULT_SCREEN_PATH,
     MODEL_PATH,
     load_artifact,
-    run_scan,
+    run_dual_scan,
 )
 
 
@@ -15,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Score US stock candidates for pre-spike potential.")
     parser.add_argument("--model", type=Path, default=MODEL_PATH, help="Trained model artifact path.")
     parser.add_argument("--output", type=Path, default=DEFAULT_SCREEN_PATH, help="CSV output path.")
-    parser.add_argument("--top", type=int, default=2, help="How many focus picks to print.")
+    parser.add_argument("--top", type=int, default=2, help="How many continuation picks to print.")
     parser.add_argument(
         "--tickers",
         type=str,
@@ -61,23 +63,28 @@ def main() -> None:
     artifact = load_artifact(args.model)
 
     extra_tickers = load_extra_tickers(args)
-    scored = run_scan(
+    scan_bundle = run_dual_scan(
         artifact=artifact,
         tickers=extra_tickers or None,
         append_default_universe=args.append_default_universe,
         skip_premarket=args.skip_premarket,
         top_context_rows=max(args.top * 15, 60),
-        max_picks=args.top,
+        continuation_max_picks=args.top,
+        supernova_max_alerts=1,
     )
-    if scored.empty:
+    continuation = scan_bundle["continuation_picks"]
+    supernova = scan_bundle["supernova_alerts"]
+    if continuation.empty and supernova.empty:
         raise SystemExit("No scan snapshots could be built.")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    scored.to_csv(args.output, index=False)
+    combined = pd.concat([continuation, supernova], ignore_index=True)
+    combined.to_csv(args.output, index=False)
     print(f"[done] wrote scan results: {args.output}")
     display_cols = [
         "selection_rank",
         "ticker",
+        "selection_bucket",
         "trade_profile",
         "scan_priority_score",
         "setup_grade",
@@ -97,8 +104,14 @@ def main() -> None:
         "premarket_dollar_volume",
         "premarket_hold_quality",
     ]
-    available_cols = [col for col in display_cols if col in scored.columns]
-    print(scored[available_cols].head(args.top).to_string(index=False))
+    if not continuation.empty:
+        available_cols = [col for col in display_cols if col in continuation.columns]
+        print("\n[continuation picks]")
+        print(continuation[available_cols].head(args.top).to_string(index=False))
+    if not supernova.empty:
+        available_cols = [col for col in display_cols if col in supernova.columns]
+        print("\n[supernova alerts]")
+        print(supernova[available_cols].head(1).to_string(index=False))
 
 
 if __name__ == "__main__":
