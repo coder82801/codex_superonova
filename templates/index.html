@@ -16,14 +16,14 @@
           <span class="eyebrow">US Spike Scanner</span>
           <h1>Patlama öncesi adayları temiz ve toksik ayrımıyla tara.</h1>
           <p>
-            Bu arayüz, eğitilmiş spike modeliyle hisseleri skorlar; ayrı bir toxic modeliyle
-            reverse split ve kirli yapı riskini aşağı iter.
+            Bu arayüz, düşük bütçeye uygun evrenden en fazla 1-2 yüksek seçicilikli adayı çıkarır;
+            spike ve continuation olasılığını ayrı hesaplar, sonra giriş/çıkış planı üretir.
           </p>
         </div>
         <div class="hero-note">
           <div class="note-card">
             <span class="note-label">Tarama Mantığı</span>
-            <p>`scan_priority_score` = temiz spike olasılığı + varsa premarket bağlamı.</p>
+            <p>`scan_priority_score` = yapısal edge + premarket teyidi + düşük bütçe filtresi - toxic ceza.</p>
           </div>
         </div>
       </section>
@@ -37,8 +37,8 @@
 
           <div class="controls-row">
             <label class="field compact">
-              <span>Gösterilecek Sonuç</span>
-              <input type="number" min="5" max="100" step="1" name="table_limit" value="{{ form_data.table_limit }}">
+              <span>Maksimum Aday</span>
+              <input type="number" min="1" max="2" step="1" name="table_limit" value="{{ form_data.table_limit }}">
             </label>
 
             <label class="toggle">
@@ -65,20 +65,28 @@
       {% if summary %}
       <section class="summary-grid">
         <article class="summary-card">
-          <span>Toplam Aday</span>
+          <span>Taranan Evren</span>
           <strong>{{ summary.total_candidates }}</strong>
+        </article>
+        <article class="summary-card">
+          <span>Focus Havuzu</span>
+          <strong>{{ summary.focus_candidates }}</strong>
         </article>
         <article class="summary-card">
           <span>En Yüksek Skor</span>
           <strong>{{ "%.2f"|format(summary.top_score) }}</strong>
         </article>
         <article class="summary-card">
-          <span>A / A+ Sayısı</span>
-          <strong>{{ summary.a_grade_count }}</strong>
-        </article>
-        <article class="summary-card">
-          <span>Kaynak</span>
-          <strong>{% if summary.used_watchlist %}Watchlist{% else %}Default Universe{% endif %}</strong>
+          <span>Tarama Kaynağı</span>
+          <strong>
+            {% if summary.used_fallback %}
+            Fallback Selection
+            {% elif summary.used_watchlist %}
+            Watchlist
+            {% else %}
+            Default Universe
+            {% endif %}
+          </strong>
         </article>
       </section>
       {% endif %}
@@ -86,8 +94,8 @@
       {% if results %}
       <section class="panel results-panel">
         <div class="panel-head">
-          <h2>Tarama Sonuçları</h2>
-          <p>Skor yüksek oldukça temiz spike setup olasılığı artar.</p>
+          <h2>Odak Adaylar</h2>
+          <p>Liste yalnızca işlem yapılabilir görülen 1-2 adayı ve deterministik trade planını gösterir.</p>
         </div>
         <div class="table-wrap">
           <table>
