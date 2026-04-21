@@ -16,14 +16,14 @@
           <span class="eyebrow">US Spike Scanner</span>
           <h1>Patlama öncesi adayları temiz ve toksik ayrımıyla tara.</h1>
           <p>
-            Bu arayüz, düşük bütçeye uygun evrenden en fazla 1-2 yüksek seçicilikli adayı çıkarır;
-            spike ve continuation olasılığını ayrı hesaplar, sonra giriş/çıkış planı üretir.
+            Bu arayüz iki modla çalışır: kendi hesabın için `NEXT_DAY_CONTINUATION`, aynı gün al-sat hakkı varsa
+            ayrı `SUPERNOVA_IGNITION` alarmı üretir.
           </p>
         </div>
         <div class="hero-note">
           <div class="note-card">
             <span class="note-label">Tarama Mantığı</span>
-            <p>`scan_priority_score` = yapısal edge + premarket teyidi + düşük bütçe filtresi - toxic ceza.</p>
+            <p>Continuation ana moddur; supernova ise yalnızca çok güçlü geldiğinde ayrı alarm olarak gösterilir.</p>
           </div>
         </div>
       </section>
@@ -69,18 +69,18 @@
           <strong>{{ summary.total_candidates }}</strong>
         </article>
         <article class="summary-card">
-          <span>Focus Havuzu</span>
-          <strong>{{ summary.focus_candidates }}</strong>
+          <span>Continuation Havuzu</span>
+          <strong>{{ summary.continuation_focus_candidates }}</strong>
         </article>
         <article class="summary-card">
-          <span>En Yüksek Skor</span>
-          <strong>{{ "%.2f"|format(summary.top_score) }}</strong>
+          <span>Supernova Alarm Havuzu</span>
+          <strong>{{ summary.supernova_focus_candidates }}</strong>
         </article>
         <article class="summary-card">
           <span>Tarama Kaynağı</span>
           <strong>
-            {% if summary.used_fallback %}
-            Fallback Selection
+            {% if summary.continuation_used_fallback %}
+            Continuation Fallback
             {% elif summary.used_watchlist %}
             Watchlist
             {% else %}
@@ -91,23 +91,23 @@
       </section>
       {% endif %}
 
-      {% if results %}
+      {% if continuation_results %}
       <section class="panel results-panel">
         <div class="panel-head">
-          <h2>Odak Adaylar</h2>
-          <p>Liste yalnızca işlem yapılabilir görülen 1-2 adayı ve deterministik trade planını gösterir.</p>
+          <h2>Continuation Picks</h2>
+          <p>Kendi hesabın için ana liste. Gece taşıma ve ertesi gün satış planına göre seçilir.</p>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                {% for key in results[0].keys() %}
+                {% for key in continuation_results[0].keys() %}
                 <th>{{ key }}</th>
                 {% endfor %}
               </tr>
             </thead>
             <tbody>
-              {% for row in results %}
+              {% for row in continuation_results %}
               <tr>
                 {% for key, value in row.items() %}
                 <td>{{ value if value is not none else "" }}</td>
@@ -117,6 +117,39 @@
             </tbody>
           </table>
         </div>
+      </section>
+      {% endif %}
+
+      {% if supernova_results %}
+      <section class="panel results-panel">
+        <div class="panel-head">
+          <h2>Supernova Alerts</h2>
+          <p>Bu bölüm yalnızca çok güçlü aynı gün spike setup’larını gösterir. Eşinin hesabı gibi day-trade imkanında değerlendirilir.</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                {% for key in supernova_results[0].keys() %}
+                <th>{{ key }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in supernova_results %}
+              <tr>
+                {% for key, value in row.items() %}
+                <td>{{ value if value is not none else "" }}</td>
+                {% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% elif summary %}
+      <section class="alert">
+        Çok güçlü `SUPERNOVA_IGNITION` alarmı oluşmadı. Bugün aynı gün al-sat tarafında zorlamaya gerek yok.
       </section>
       {% endif %}
     </div>
