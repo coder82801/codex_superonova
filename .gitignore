@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+vendor/
+models/
+spike_scan_results.csv
+.env
