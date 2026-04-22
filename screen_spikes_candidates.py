@@ -60,7 +60,13 @@ def load_extra_tickers(args: argparse.Namespace) -> list[str]:
 
 def main() -> None:
     args = parse_args()
-    artifact = load_artifact(args.model)
+    try:
+        artifact = load_artifact(args.model)
+    except Exception:
+        from train_spike_model import main as train_main
+
+        train_main([])
+        artifact = load_artifact(args.model)
 
     extra_tickers = load_extra_tickers(args)
     scan_bundle = run_dual_scan(
@@ -90,29 +96,5 @@ def main() -> None:
         "setup_grade",
         "supernova_probability",
         "continuation_probability",
+        "failed_setup_probability",
         "clean_spike_probability",
-        "toxic_probability",
-        "entry_price",
-        "stop_price",
-        "target_price",
-        "expected_move_pct",
-        "risk_reward_ratio",
-        "no_trade_below",
-        "selection_reason",
-        "prev_close",
-        "premarket_gap_pct",
-        "premarket_dollar_volume",
-        "premarket_hold_quality",
-    ]
-    if not continuation.empty:
-        available_cols = [col for col in display_cols if col in continuation.columns]
-        print("\n[continuation picks]")
-        print(continuation[available_cols].head(args.top).to_string(index=False))
-    if not supernova.empty:
-        available_cols = [col for col in display_cols if col in supernova.columns]
-        print("\n[supernova alerts]")
-        print(supernova[available_cols].head(1).to_string(index=False))
-
-
-if __name__ == "__main__":
-    main()
