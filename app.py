@@ -191,11 +191,7 @@ def api_scan():
 
     append_default_universe = bool(payload.get("append_default_universe", False))
     skip_premarket = bool(payload.get("skip_premarket", False))
-    limit = clamp_int(
-        str(payload.get("limit", DEFAULT_CONTINUATION_PICKS)),
-        minimum=1,
-        maximum=DEFAULT_CONTINUATION_PICKS,
-    )
+    limit = clamp_int(str(payload.get("limit", DEFAULT_CONTINUATION_PICKS)), minimum=1, maximum=DEFAULT_CONTINUATION_PICKS)
 
     try:
         ensure_model()
