@@ -25,6 +25,16 @@ from sklearn.preprocessing import StandardScaler
 NY_TZ = ZoneInfo("America/New_York")
 HISTORY_START = "2023-01-01"
 
+ROOT = Path(__file__).resolve().parent
+DATASET_PATH = ROOT / "clean_recovery_supernova_labeled_dataset.csv"
+MODELS_DIR = ROOT / "models"
+MODEL_PATH = MODELS_DIR / "spike_model.joblib"
+METRICS_PATH = MODELS_DIR / "spike_model_metrics.json"
+DEFAULT_SCREEN_PATH = ROOT / "spike_scan_results.csv"
+
+POSITIVE_LABELS = {"CLEAN_RECOVERY_2X", "NEAR_POSITIVE", "OPEN_DRIVE_SQUEEZE"}
+TOXIC_LABEL = "TOXIC_EXCLUDE"
+
 
 def chunked(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
