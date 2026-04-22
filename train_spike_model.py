@@ -25,7 +25,10 @@ def main(argv: list[str] | None = None) -> None:
 
     raw = load_labeled_dataset(args.dataset)
     spike_metrics = evaluate_model(raw, "target_spike")
+    continuation_metrics = evaluate_model(raw, "target_continuation")
+    supernova_metrics = evaluate_model(raw, "target_supernova")
     toxic_metrics = evaluate_model(raw, "target_toxic")
+    failed_setup_metrics = evaluate_model(raw, "target_failed_setup")
 
     artifact = fit_final_models(raw)
     save_artifact(artifact, args.model_out)
@@ -35,7 +38,10 @@ def main(argv: list[str] | None = None) -> None:
         "training_rows": int(len(raw)),
         "positive_labels": artifact["positive_labels"],
         "spike_model_metrics": spike_metrics,
+        "continuation_model_metrics": continuation_metrics,
+        "supernova_model_metrics": supernova_metrics,
         "toxic_model_metrics": toxic_metrics,
+        "failed_setup_model_metrics": failed_setup_metrics,
         "top_features_by_spike_coef": artifact["feature_importance"][:12],
     }
     save_metrics(metrics, args.metrics_out)
